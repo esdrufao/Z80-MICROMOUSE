@@ -1,0 +1,286 @@
+; =============================================
+; MICROMOUSE MGH-80 - Z80 + 8255
+; Compatible con zasm assembler
+; =============================================
+
+
+#target bin        ; 
+
+; =============================================
+; DEFINICIONES DE PUERTOS 8255
+; =============================================
+PPI_A:    equ 00H    ; Puerto A: Control motores
+PPI_B:    equ 01H    ; Puerto B: Sensores TCRT5000
+PPI_C:    equ 02H    ; Puerto C: LEDs + sensor suelo
+PPI_CTRL: equ 03H    ; Puerto de control 8255
+
+; =============================================
+; MÁSCARAS DE BITS
+; =============================================
+SENSOR_FRONTAL:  equ %00000001
+SENSOR_DERECHA:  equ %00000010  
+SENSOR_IZQUIERDA: equ %00000100
+SENSOR_TRASERO:   equ %00001000
+SENSOR_SUELO:     equ %10000000
+
+MOTOR_IZQ_ADELANTE: equ %00000001
+MOTOR_IZQ_ATRAS:    equ %00000010
+MOTOR_DER_ADELANTE: equ %00000100  
+MOTOR_DER_ATRAS:    equ %00001000
+
+LED_FRONTAL:     equ %00000001
+LED_DERECHA:     equ %00000010
+LED_IZQUIERDA:   equ %00000100  
+LED_TRASERO:     equ %00001000
+LED_MOTOR_ADEL:  equ %00010000
+LED_MOTOR_ATRAS: equ %00100000
+LED_GIRO_DER:    equ %01000000
+LED_GIRO_IZQ:    equ %10000000
+
+; =============================================
+; VARIABLES EN RAM
+; =============================================
+estado_sensores: equ 0C000H
+estado_motores:  equ 0C001H
+en_meta:         equ 0C002H
+
+; =============================================
+; CÓDIGO PRINCIPAL - EMPIEZA EN 8000H
+; =============================================
+#code CODE, 8000H
+
+INIT:
+    ; Configurar 8255
+    ld a, %10001000   ; A=out, B=in, C upper=out, C lower=out
+    out (PPI_CTRL), a
+    
+    ; Inicializar variables
+    xor a
+    ld (estado_sensores), a
+    ld (estado_motores), a
+    ld (en_meta), a
+    
+    ; Parar motores y apagar LEDs
+    out (PPI_A), a
+    out (PPI_C), a
+    
+    ; Espera inicial
+    ld b, 50
+    call DELAY_MS
+
+; =============================================
+; BUCLE PRINCIPAL
+; =============================================
+MAIN_LOOP:
+    call LEER_SENSORES
+    call VERIFICAR_META
+    ld a, (en_meta)
+    cp 1
+    jp z, EN_META_DETECTADA
+    
+    call DECIDIR_MOVIMIENTO
+    call ACTUALIZAR_LEDS
+    
+    ld b, 20
+    call DELAY_MS
+    
+    jp MAIN_LOOP
+
+; =============================================
+; RUTINA: LEER SENSORES
+; =============================================
+LEER_SENSORES:
+    push af
+    
+    ; Leer sensores TCRT5000
+    in a, (PPI_B)
+    and %00001111
+    ld (estado_sensores), a
+    
+    ; Leer sensor suelo
+    in a, (PPI_C)
+    and SENSOR_SUELO
+    jr z, SUELO_SIN_LINEA
+    
+    ; Línea blanca detectada
+    ld a, 1
+    ld (en_meta), a
+    jr LEER_SENSORES_END
+    
+SUELO_SIN_LINEA:
+    xor a
+    ld (en_meta), a
+    
+LEER_SENSORES_END:
+    pop af
+    ret
+
+; =============================================
+; RUTINA: VERIFICAR META
+; =============================================
+VERIFICAR_META:
+    push af
+    ld a, (en_meta)
+    cp 1
+    call z, PARAR_EN_META
+    pop af
+    ret
+
+PARAR_EN_META:
+    call MOTOR_PARAR
+    ld a, $FF
+    out (PPI_C), a
+    ret
+
+; =============================================
+; RUTINA: DECIDIR MOVIMIENTO
+; =============================================
+DECIDIR_MOVIMIENTO:
+    push af
+    push bc
+    
+    ld a, (estado_sensores)
+    ld b, a
+    
+    ; Algoritmo de seguimiento
+    bit 0, b
+    jp nz, PARED_FRONTAL
+    
+    bit 1, b
+    jp z, NO_HAY_PARED_DERECHA
+    
+    call MOTOR_ADELANTE
+    jp DECIDIR_FIN
+
+NO_HAY_PARED_DERECHA:
+    call MOTOR_GIRO_DERECHA_SUAVE
+    jp DECIDIR_FIN
+
+PARED_FRONTAL:
+    bit 1, b
+    jp nz, GIRO_IZQUIERDA_FORZADO
+    
+    call MOTOR_GIRO_DERECHA
+    jp DECIDIR_FIN
+
+GIRO_IZQUIERDA_FORZADO:
+    call MOTOR_GIRO_IZQUIERDA
+
+DECIDIR_FIN:
+    pop bc
+    pop af
+    ret
+
+; =============================================
+; RUTINAS DE CONTROL DE MOTORES
+; =============================================
+MOTOR_ADELANTE:
+    ld a, MOTOR_IZQ_ADELANTE | MOTOR_DER_ADELANTE
+    out (PPI_A), a
+    ld (estado_motores), a
+    ret
+
+MOTOR_GIRO_DERECHA:
+    ld a, MOTOR_IZQ_ADELANTE | MOTOR_DER_ATRAS
+    out (PPI_A), a
+    ld (estado_motores), a
+    ret
+
+MOTOR_GIRO_IZQUIERDA:
+    ld a, MOTOR_IZQ_ATRAS | MOTOR_DER_ADELANTE
+    out (PPI_A), a
+    ld (estado_motores), a
+    ret
+
+MOTOR_GIRO_DERECHA_SUAVE:
+    ld a, MOTOR_IZQ_ADELANTE
+    out (PPI_A), a
+    ld (estado_motores), a
+    ret
+
+MOTOR_PARAR:
+    xor a
+    out (PPI_A), a
+    ld (estado_motores), a
+    ret
+
+; =============================================
+; RUTINA: ACTUALIZAR LEDs
+; =============================================
+ACTUALIZAR_LEDS:
+    push af
+    push bc
+    
+    ld a, (estado_sensores)
+    ld b, a
+    ld a, (estado_motores)
+    or b
+    out (PPI_C), a
+    
+    pop bc
+    pop af
+    ret
+
+; =============================================
+; RUTINAS DE DELAY
+; =============================================
+DELAY_MS:
+    push bc
+    push de
+DELAY_LOOP:
+    ld de, 250
+DELAY_INNER:
+    dec de
+    ld a, d
+    or e
+    jp nz, DELAY_INNER
+    djnz DELAY_LOOP
+    pop de
+    pop bc
+    ret
+
+; =============================================
+; MANEJADOR DE META
+; =============================================
+EN_META_DETECTADA:
+    call MOTOR_PARAR
+    
+    ; Secuencia de victoria
+    ld b, 10
+VICTORY_LOOP:
+    ld a, $FF
+    out (PPI_C), a
+    push bc
+    ld b, 10
+    call DELAY_MS
+    pop bc
+    
+    xor a
+    out (PPI_C), a  
+    push bc
+    ld b, 10
+    call DELAY_MS
+    pop bc
+    
+    djnz VICTORY_LOOP
+    
+    halt
+
+; =============================================
+; VECTORES AL FINAL DE LA EPROM
+; =============================================
+; Posicionamiento a 8FF0H para vectores
+#code VECTORS, 8FF0H
+
+    jp INIT
+
+; Vectores de interrupción a 8FF8H
+#code INTERRUPTS, 8FF8H
+
+    defw $0000      ; NMI
+    defw $0000      ; INT
+
+; Rellenar el resto de la EPROM hasta 9000H
+#code FILLER, 8FFCH
+
+    defs $9000 - $, $FF
