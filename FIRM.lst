@@ -1,0 +1,366 @@
+              	; --------------------------------------
+              	; zasm: assemble "FIRM.txt"
+              	; date: 2025-08-25 01:21:48
+              	; --------------------------------------
+
+
+              	; =============================================
+              	; MICROMOUSE MGH-80 - Z80 + 8255
+              	; Compatible con zasm assembler
+              	; =============================================
+              	
+              	#target bin
+              	
+              	; =============================================
+              	; DEFINICIONES DE PUERTOS 8255
+              	; =============================================
+0000:         	PPI_A:    equ 00H    ; Puerto A: Control motores
+0001:         	PPI_B:    equ 01H    ; Puerto B: Sensores TCRT5000
+0002:         	PPI_C:    equ 02H    ; Puerto C: LEDs + sensor suelo
+0003:         	PPI_CTRL: equ 03H    ; Puerto de control 8255
+              	
+              	; =============================================
+              	; MÁSCARAS DE BITS
+              	; =============================================
+0001:         	SENSOR_FRONTAL:  equ %00000001
+0002:         	SENSOR_DERECHA:  equ %00000010  
+0004:         	SENSOR_IZQUIERDA: equ %00000100
+0008:         	SENSOR_TRASERO:   equ %00001000
+0080:         	SENSOR_SUELO:     equ %10000000
+              	
+0001:         	MOTOR_IZQ_ADELANTE: equ %00000001
+0002:         	MOTOR_IZQ_ATRAS:    equ %00000010
+0004:         	MOTOR_DER_ADELANTE: equ %00000100  
+0008:         	MOTOR_DER_ATRAS:    equ %00001000
+              	
+0001:         	LED_FRONTAL:     equ %00000001
+0002:         	LED_DERECHA:     equ %00000010
+0004:         	LED_IZQUIERDA:   equ %00000100  
+0008:         	LED_TRASERO:     equ %00001000
+0010:         	LED_MOTOR_ADEL:  equ %00010000
+0020:         	LED_MOTOR_ATRAS: equ %00100000
+0040:         	LED_GIRO_DER:    equ %01000000
+0080:         	LED_GIRO_IZQ:    equ %10000000
+              	
+              	; =============================================
+              	; VARIABLES EN RAM
+              	; =============================================
+C000:         	estado_sensores: equ 0C000H
+C001:         	estado_motores:  equ 0C001H
+C002:         	en_meta:         equ 0C002H
+              	
+              	; =============================================
+              	; CÓDIGO PRINCIPAL - EMPIEZA EN 8000H
+              	; =============================================
+8000:         	#code CODE, 8000H
+              	
+8000:         	INIT:
+              	    ; Configurar 8255
+8000: 3E88    	    ld a, %10001000   ; A=out, B=in, C upper=out, C lower=out
+8002: D303    	    out (PPI_CTRL), a
+              	    
+              	    ; Inicializar variables
+8004: AF      	    xor a
+8005: 3200C0  	    ld (estado_sensores), a
+8008: 3201C0  	    ld (estado_motores), a
+800B: 3202C0  	    ld (en_meta), a
+              	    
+              	    ; Parar motores y apagar LEDs
+800E: D300    	    out (PPI_A), a
+8010: D302    	    out (PPI_C), a
+              	    
+              	    ; Espera inicial
+8012: 0632    	    ld b, 50
+8014: CDC480  	    call DELAY_MS
+              	
+              	; =============================================
+              	; BUCLE PRINCIPAL
+              	; =============================================
+8017:         	MAIN_LOOP:
+8017: CD3380  	    call LEER_SENSORES
+801A: CD4E80  	    call VERIFICAR_META
+801D: 3A02C0  	    ld a, (en_meta)
+8020: FE01    	    cp 1
+8022: CAD480  	    jp z, EN_META_DETECTADA
+              	    
+8025: CD6180  	    call DECIDIR_MOVIMIENTO
+8028: CDB580  	    call ACTUALIZAR_LEDS
+              	    
+802B: 0614    	    ld b, 20
+802D: CDC480  	    call DELAY_MS
+              	    
+8030: C31780  	    jp MAIN_LOOP
+              	
+              	; =============================================
+              	; RUTINA: LEER SENSORES
+              	; =============================================
+8033:         	LEER_SENSORES:
+8033: F5      	    push af
+              	    
+              	    ; Leer sensores TCRT5000
+8034: DB01    	    in a, (PPI_B)
+8036: E60F    	    and %00001111
+8038: 3200C0  	    ld (estado_sensores), a
+              	    
+              	    ; Leer sensor suelo
+803B: DB02    	    in a, (PPI_C)
+803D: E680    	    and SENSOR_SUELO
+803F: 2807    	    jr z, SUELO_SIN_LINEA
+              	    
+              	    ; Línea blanca detectada
+8041: 3E01    	    ld a, 1
+8043: 3202C0  	    ld (en_meta), a
+8046: 1804    	    jr LEER_SENSORES_END
+              	    
+8048:         	SUELO_SIN_LINEA:
+8048: AF      	    xor a
+8049: 3202C0  	    ld (en_meta), a
+              	    
+804C:         	LEER_SENSORES_END:
+804C: F1      	    pop af
+804D: C9      	    ret
+              	
+              	; =============================================
+              	; RUTINA: VERIFICAR META
+              	; =============================================
+804E:         	VERIFICAR_META:
+804E: F5      	    push af
+804F: 3A02C0  	    ld a, (en_meta)
+8052: FE01    	    cp 1
+8054: CC5980  	    call z, PARAR_EN_META
+8057: F1      	    pop af
+8058: C9      	    ret
+              	
+8059:         	PARAR_EN_META:
+8059: CDAE80  	    call MOTOR_PARAR
+805C: 3EFF    	    ld a, $FF
+805E: D302    	    out (PPI_C), a
+8060: C9      	    ret
+              	
+              	; =============================================
+              	; RUTINA: DECIDIR MOVIMIENTO
+              	; =============================================
+8061:         	DECIDIR_MOVIMIENTO:
+8061: F5      	    push af
+8062: C5      	    push bc
+              	    
+8063: 3A00C0  	    ld a, (estado_sensores)
+8066: 47      	    ld b, a
+              	    
+              	    ; Algoritmo de seguimiento
+8067: CB40    	    bit 0, b
+8069: C27D80  	    jp nz, PARED_FRONTAL
+              	    
+806C: CB48    	    bit 1, b
+806E: CA7780  	    jp z, NO_HAY_PARED_DERECHA
+              	    
+8071: CD8E80  	    call MOTOR_ADELANTE
+8074: C38B80  	    jp DECIDIR_FIN
+              	
+8077:         	NO_HAY_PARED_DERECHA:
+8077: CDA680  	    call MOTOR_GIRO_DERECHA_SUAVE
+807A: C38B80  	    jp DECIDIR_FIN
+              	
+807D:         	PARED_FRONTAL:
+807D: CB48    	    bit 1, b
+807F: C28880  	    jp nz, GIRO_IZQUIERDA_FORZADO
+              	    
+8082: CD9680  	    call MOTOR_GIRO_DERECHA
+8085: C38B80  	    jp DECIDIR_FIN
+              	
+8088:         	GIRO_IZQUIERDA_FORZADO:
+8088: CD9E80  	    call MOTOR_GIRO_IZQUIERDA
+              	
+808B:         	DECIDIR_FIN:
+808B: C1      	    pop bc
+808C: F1      	    pop af
+808D: C9      	    ret
+              	
+              	; =============================================
+              	; RUTINAS DE CONTROL DE MOTORES
+              	; =============================================
+808E:         	MOTOR_ADELANTE:
+808E: 3E05    	    ld a, MOTOR_IZQ_ADELANTE | MOTOR_DER_ADELANTE
+8090: D300    	    out (PPI_A), a
+8092: 3201C0  	    ld (estado_motores), a
+8095: C9      	    ret
+              	
+8096:         	MOTOR_GIRO_DERECHA:
+8096: 3E09    	    ld a, MOTOR_IZQ_ADELANTE | MOTOR_DER_ATRAS
+8098: D300    	    out (PPI_A), a
+809A: 3201C0  	    ld (estado_motores), a
+809D: C9      	    ret
+              	
+809E:         	MOTOR_GIRO_IZQUIERDA:
+809E: 3E06    	    ld a, MOTOR_IZQ_ATRAS | MOTOR_DER_ADELANTE
+80A0: D300    	    out (PPI_A), a
+80A2: 3201C0  	    ld (estado_motores), a
+80A5: C9      	    ret
+              	
+80A6:         	MOTOR_GIRO_DERECHA_SUAVE:
+80A6: 3E01    	    ld a, MOTOR_IZQ_ADELANTE
+80A8: D300    	    out (PPI_A), a
+80AA: 3201C0  	    ld (estado_motores), a
+80AD: C9      	    ret
+              	
+80AE:         	MOTOR_PARAR:
+80AE: AF      	    xor a
+80AF: D300    	    out (PPI_A), a
+80B1: 3201C0  	    ld (estado_motores), a
+80B4: C9      	    ret
+              	
+              	; =============================================
+              	; RUTINA: ACTUALIZAR LEDs
+              	; =============================================
+80B5:         	ACTUALIZAR_LEDS:
+80B5: F5      	    push af
+80B6: C5      	    push bc
+              	    
+80B7: 3A00C0  	    ld a, (estado_sensores)
+80BA: 47      	    ld b, a
+80BB: 3A01C0  	    ld a, (estado_motores)
+80BE: B0      	    or b
+80BF: D302    	    out (PPI_C), a
+              	    
+80C1: C1      	    pop bc
+80C2: F1      	    pop af
+80C3: C9      	    ret
+              	
+              	; =============================================
+              	; RUTINAS DE DELAY
+              	; =============================================
+80C4:         	DELAY_MS:
+80C4: C5      	    push bc
+80C5: D5      	    push de
+80C6:         	DELAY_LOOP:
+80C6: 11FA00  	    ld de, 250
+80C9:         	DELAY_INNER:
+80C9: 1B      	    dec de
+80CA: 7A      	    ld a, d
+80CB: B3      	    or e
+80CC: C2C980  	    jp nz, DELAY_INNER
+80CF: 10F5    	    djnz DELAY_LOOP
+80D1: D1      	    pop de
+80D2: C1      	    pop bc
+80D3: C9      	    ret
+              	
+              	; =============================================
+              	; MANEJADOR DE META
+              	; =============================================
+80D4:         	EN_META_DETECTADA:
+80D4: CDAE80  	    call MOTOR_PARAR
+              	    
+              	    ; Secuencia de victoria
+80D7: 060A    	    ld b, 10
+80D9:         	VICTORY_LOOP:
+80D9: 3EFF    	    ld a, $FF
+80DB: D302    	    out (PPI_C), a
+80DD: C5      	    push bc
+80DE: 060A    	    ld b, 10
+80E0: CDC480  	    call DELAY_MS
+80E3: C1      	    pop bc
+              	    
+80E4: AF      	    xor a
+80E5: D302    	    out (PPI_C), a  
+80E7: C5      	    push bc
+80E8: 060A    	    ld b, 10
+80EA: CDC480  	    call DELAY_MS
+80ED: C1      	    pop bc
+              	    
+80EE: 10E9    	    djnz VICTORY_LOOP
+              	    
+80F0: 76      	    halt
+              	
+              	; =============================================
+              	; VECTORES AL FINAL DE LA EPROM
+              	; =============================================
+              	; Posicionamiento a 8FF0H para vectores
+8FF0:         	#code VECTORS, 8FF0H
+              	
+8FF0: C30080  	    jp INIT
+              	
+              	; Vectores de interrupción a 8FF8H
+8FF8:         	#code INTERRUPTS, 8FF8H
+              	
+8FF8: 0000    	    defw $0000      ; NMI
+8FFA: 0000    	    defw $0000      ; INT
+              	
+              	; Rellenar el resto de la EPROM hasta 9000H
+8FFC:         	#code FILLER, 8FFCH
+              	
+8FFC: FFFFFFFF	    defs $9000 - $, $FF
+
+
+; +++ segments +++
+
+#CODE CODE        = $8000 = 32768,  size = $00F1 =   241
+#CODE VECTORS     = $8FF0 = 36848,  size = $0003 =     3
+#CODE INTERRUPTS  = $8FF8 = 36856,  size = $0004 =     4
+#CODE FILLER      = $8FFC = 36860,  size = $0004 =     4
+
+; +++ global symbols +++
+
+ACTUALIZAR_LEDS      = $80B5 = 32949  CODE       FIRM.txt:209
+CODE                 = $8000 = 32768  CODE       FIRM.txt:49 (unused)
+CODE_end             = $80F1 = 33009  CODE       FIRM.txt:49 (unused)
+CODE_size            = $00F1 =   241  CODE       FIRM.txt:49 (unused)
+DECIDIR_FIN          = $808B = 32907  CODE       FIRM.txt:168
+DECIDIR_MOVIMIENTO   = $8061 = 32865  CODE       FIRM.txt:137
+DELAY_INNER          = $80C9 = 32969  CODE       FIRM.txt:231
+DELAY_LOOP           = $80C6 = 32966  CODE       FIRM.txt:229
+DELAY_MS             = $80C4 = 32964  CODE       FIRM.txt:226
+EN_META_DETECTADA    = $80D4 = 32980  CODE       FIRM.txt:244
+FILLER               = $8FFC = 36860  FILLER     FIRM.txt:283 (unused)
+FILLER_end           = $9000 = 36864  FILLER     FIRM.txt:283 (unused)
+FILLER_size          = $0004 =     4  FILLER     FIRM.txt:283 (unused)
+GIRO_IZQUIERDA_FORZADO = $8088 = 32904  CODE       FIRM.txt:165
+INIT                 = $8000 = 32768  CODE       FIRM.txt:51
+INTERRUPTS           = $8FF8 = 36856  INTERRUPTS FIRM.txt:277 (unused)
+INTERRUPTS_end       = $8FFC = 36860  INTERRUPTS FIRM.txt:277 (unused)
+INTERRUPTS_size      = $0004 =     4  INTERRUPTS FIRM.txt:277 (unused)
+LED_DERECHA          = $0002 =     2             FIRM.txt:31 (unused)
+LED_FRONTAL          = $0001 =     1             FIRM.txt:30 (unused)
+LED_GIRO_DER         = $0040 =    64             FIRM.txt:36 (unused)
+LED_GIRO_IZQ         = $0080 =   128             FIRM.txt:37 (unused)
+LED_IZQUIERDA        = $0004 =     4             FIRM.txt:32 (unused)
+LED_MOTOR_ADEL       = $0010 =    16             FIRM.txt:34 (unused)
+LED_MOTOR_ATRAS      = $0020 =    32             FIRM.txt:35 (unused)
+LED_TRASERO          = $0008 =     8             FIRM.txt:33 (unused)
+LEER_SENSORES        = $8033 = 32819  CODE       FIRM.txt:91
+LEER_SENSORES_END    = $804C = 32844  CODE       FIRM.txt:113
+MAIN_LOOP            = $8017 = 32791  CODE       FIRM.txt:73
+MOTOR_ADELANTE       = $808E = 32910  CODE       FIRM.txt:176
+MOTOR_DER_ADELANTE   = $0004 =     4             FIRM.txt:27
+MOTOR_DER_ATRAS      = $0008 =     8             FIRM.txt:28
+MOTOR_GIRO_DERECHA   = $8096 = 32918  CODE       FIRM.txt:182
+MOTOR_GIRO_DERECHA_SUAVE = $80A6 = 32934  CODE       FIRM.txt:194
+MOTOR_GIRO_IZQUIERDA = $809E = 32926  CODE       FIRM.txt:188
+MOTOR_IZQ_ADELANTE   = $0001 =     1             FIRM.txt:25
+MOTOR_IZQ_ATRAS      = $0002 =     2             FIRM.txt:26
+MOTOR_PARAR          = $80AE = 32942  CODE       FIRM.txt:200
+NO_HAY_PARED_DERECHA = $8077 = 32887  CODE       FIRM.txt:154
+PARAR_EN_META        = $8059 = 32857  CODE       FIRM.txt:128
+PARED_FRONTAL        = $807D = 32893  CODE       FIRM.txt:158
+PPI_A                = $0000 =     0             FIRM.txt:11
+PPI_B                = $0001 =     1             FIRM.txt:12
+PPI_C                = $0002 =     2             FIRM.txt:13
+PPI_CTRL             = $0003 =     3             FIRM.txt:14
+SENSOR_DERECHA       = $0002 =     2             FIRM.txt:20 (unused)
+SENSOR_FRONTAL       = $0001 =     1             FIRM.txt:19 (unused)
+SENSOR_IZQUIERDA     = $0004 =     4             FIRM.txt:21 (unused)
+SENSOR_SUELO         = $0080 =   128             FIRM.txt:23
+SENSOR_TRASERO       = $0008 =     8             FIRM.txt:22 (unused)
+SUELO_SIN_LINEA      = $8048 = 32840  CODE       FIRM.txt:109
+VECTORS              = $8FF0 = 36848  VECTORS    FIRM.txt:272 (unused)
+VECTORS_end          = $8FF3 = 36851  VECTORS    FIRM.txt:272 (unused)
+VECTORS_size         = $0003 =     3  VECTORS    FIRM.txt:272 (unused)
+VERIFICAR_META       = $804E = 32846  CODE       FIRM.txt:120
+VICTORY_LOOP         = $80D9 = 32985  CODE       FIRM.txt:249
+_z80_                = $0001 =     1             FIRM.txt:1 (unused)
+en_meta              = $C002 = 49154             FIRM.txt:44
+estado_motores       = $C001 = 49153             FIRM.txt:43
+estado_sensores      = $C000 = 49152             FIRM.txt:42
+
+
+total time: 0.0037 sec.
+no errors
